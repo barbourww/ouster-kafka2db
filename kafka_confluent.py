@@ -96,12 +96,20 @@ class KafkaConfluentConsumer:
         self._subscribed = False
 
     # ---- Subscription / lifecycle -------------------------------------------------
-    def subscribe(self, topics: List[str]) -> None:
+    def subscribe(self, topics: List[str], initialize_with_poll: bool = True, init_retries: int = 5) -> None:
         if not topics:
             raise ValueError("subscribe() requires at least one topic")
         self.consumer.subscribe(topics, on_assign=self._on_assign, on_revoke=self._on_revoke)
         self._subscribed = True
         logger.info("Subscribed to topics: %s", topics)
+        for topic in topics:
+            md = self.consumer.list_topics(topic=topic, timeout=10.0)
+            partitions = list(md.topics[topic].partitions.keys())  # [0,1,2,...]
+            logger.info(f"\tAvailable partitions for topic {topic}: {partitions}")
+            topic_partitions = [TopicPartition(topic, p) for p in partitions]
+            self.consumer.assign(topic_partitions)
+        if initialize_with_poll is True:
+            self.initialize_poll(retries=init_retries)
 
     def close(self) -> None:
         try:
@@ -110,7 +118,8 @@ class KafkaConfluentConsumer:
             logger.exception("Error closing consumer")
 
     # ---- Polling ------------------------------------------------------------------
-    def poll(self, timeout: float = 1.0) -> Optional[Dict[str, Any]]:
+    def poll(self, timeout: float = 1.0, convert_msg_timestamp_dt: bool = True,
+             timestamp_tz: zoneinfo.ZoneInfo = zoneinfo.ZoneInfo('US/Central')) -> Optional[Dict[str, Any]]:
         """
         Poll for a single message. Returns a dict with decoded payload & metadata,
         or None if no message is available within timeout.
@@ -120,23 +129,44 @@ class KafkaConfluentConsumer:
             raise RuntimeError("poll() called before subscribe()")
 
         try:
-            msg = self.consumer.poll(timeout)
+            rcv_msg = self.consumer.poll(timeout)
         except KafkaException as e:
             logger.error("Kafka poll exception: %s", e)
             return None
 
-        if msg is None:
+        if rcv_msg is None:
             return None
 
-        if msg.error():
+        if rcv_msg.error():
             # Some errors are informational (e.g., partition EOF). Surface only real errors.
-            if msg.error().code() == KafkaError._PARTITION_EOF:
-                logger.debug("Partition EOF: %s", msg.error())
+            if rcv_msg.error().code() == KafkaError._PARTITION_EOF:
+                logger.debug("Partition EOF: %s", rcv_msg.error())
                 return None
-            logger.error("Kafka message error: %s", msg.error())
+            logger.error("Kafka message error: %s", rcv_msg.error())
             return None
 
-        return self._to_dict(msg)
+        msg_dict = self._to_dict(rcv_msg)
+        if convert_msg_timestamp_dt is True:
+            msg_ts_utc = datetime.datetime.fromtimestamp(msg_dict['timestamp'] / 1000, tz=zoneinfo.ZoneInfo("UTC"))
+            msg_ts_local = msg_ts_utc.astimezone(tz=timestamp_tz)
+            msg_dict['msg_timestamp_dt'] = msg_ts_local
+        return msg_dict
+
+    def initialize_poll(self, retries: int = 5, error_on_failure: bool = True) -> None:
+        for i in range(retries):
+            test_msg = self.poll(timeout=5.0, convert_msg_timestamp_dt=True)
+            if test_msg:
+                logger.info("Received initial message for initialization:")
+                print(f"\tMessage key: {test_msg['key']}")
+                print(f"\tMessage timestamp: {test_msg['msg_timestamp_dt']}")
+                break
+            else:
+                print(f"No message on poll attempt #{i + 1}.")
+        else:
+            print("No message received in multiple attempts")
+            self.close()
+            if error_on_failure:
+                raise ConnectionError(f"Could not receive data during initialization poll on {retries} retries.")
 
     def consume_batch(self, max_messages: int = 100, timeout: float = 1.0) -> List[Dict[str, Any]]:
         """Consume up to max_messages in a batch for higher throughput."""
@@ -158,7 +188,7 @@ class KafkaConfluentConsumer:
             out.append(self._to_dict(m))
         return out
 
-    def maybe_fast_forward(self, max_delay_seconds: Optional[int] = None) -> None:
+    def maybe_fast_forward(self, max_delay_seconds: Optional[int] = None, reinitialize_with_poll: bool = True) -> None:
         """Ensure current start position is no older than (now - delay). Uses assign() with explicit offsets."""
         if not self._subscribed:
             raise RuntimeError("maybe_fast_forward() called before subscribe()")
@@ -222,6 +252,9 @@ class KafkaConfluentConsumer:
                     pass
         except Exception as e:
             logger.warning("maybe_fast_forward(): offsets_for_times failed: %s", e)
+
+        if reinitialize_with_poll is True:
+            self.initialize_poll()
 
     def lag_status(self, window_seconds: int = 60) -> Dict[str, Any]:
         """Return per-partition lag info.
@@ -409,44 +442,9 @@ if __name__ == "__main__":
     consumer = KafkaConfluentConsumer(common_kafka_config)
     topic = os.environ.get("KAFKA_TOPIC", "my-topic")
     consumer.subscribe([topic])
-    md = consumer.consumer.list_topics(topic=topic, timeout=10.0)
-    parts = list(md.topics[topic].partitions.keys())  # [0,1,2,...]
-    logger.info(f"Available partitions for topic {topic}: {parts}")
-    tps = [TopicPartition(topic, p) for p in parts]
-    consumer.consumer.assign(tps)
-
-    for i in range(5):
-        msg = consumer.poll(timeout=5.0)
-        if msg:
-            print("Received initial message for smoke test:")
-            print({k: v for k, v in msg.items() if k != "_raw"})
-            print(f"Intersection ID: {msg['key']}")
-            ts_utc = datetime.datetime.fromtimestamp(msg['timestamp'] / 1000, tz=zoneinfo.ZoneInfo("UTC"))
-            ts_local = ts_utc.astimezone(tz=zoneinfo.ZoneInfo('US/Central'))
-            print(f"Timestamp: {ts_local}")
-            # Intentionally not committing in test harness
-            break
-        else:
-            print(f"No message on poll attempt #{i+1}.")
-    else:
-        print("No message received in multiple attempts")
-        consumer.close()
-        sys.exit(1)
 
     print("\nFast forward to recent.\n")
     consumer.maybe_fast_forward(max_delay_seconds=30)
-
-    msg = consumer.poll(timeout=10.0)
-    if msg:
-        print(f"Intersection ID: {msg['key']}")
-        ts_utc = datetime.datetime.fromtimestamp(msg['timestamp'] / 1000, tz=zoneinfo.ZoneInfo("UTC"))
-        ts_local = ts_utc.astimezone(tz=zoneinfo.ZoneInfo('US/Central'))
-        print(f"Timestamp: {ts_local}")
-        # Intentionally not committing in test harness
-    else:
-        print("No follow up message received in 10s.")
-        consumer.close()
-        sys.exit(1)
 
     partition_lag = {}
     num_messages = {}
