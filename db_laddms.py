@@ -243,8 +243,16 @@ def insert_zone_occupation(json_data, device_id: str,
     return
 
 
-def insert_object_detections(json_data, device_id: str,
+def insert_object_detections(intersection_id, timestamp_tz, json_data, device_id: str,
                              use_db_cursor: psycopg.Cursor):
+    """
+    Takes an object detections frame containing one or more individual objects and inserts each of them into the
+        database using a batch insert.
+    :param json_data: JSON string loaded as a Python dict containing a list of objects
+    :param device_id:
+    :param use_db_cursor:
+    :return:
+    """
     # Parse frame info one time.
     this_frame_timestamp = time.time()
     this_frame_count = json_data["object_list"][0]["frame_count"]

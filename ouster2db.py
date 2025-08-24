@@ -5,6 +5,7 @@ import json
 import signal
 import logging
 import zoneinfo
+from typing import List
 
 import db_laddms
 from kafka_confluent import KafkaConfluentConsumer
@@ -84,26 +85,11 @@ class Kafka2DB:
         logger.info("DB connection ready")
 
         logger.info("Subscribing to Kafka topic: %s", self.topic)
-        self.consumer.subscribe([self.topic])
-
-        # Wait for assignment by polling briefly
-        self._wait_for_assignment(timeout_sec=10)
-
+        self.consumer.subscribe([self.topic], initialize_with_poll=True)
         self._debug_assignment_and_lag("before-ff")
 
         # Optionally fast-forward so we don't start too far behind
-        self.consumer.maybe_fast_forward()
-
-        msg = self.consumer.poll(timeout=2.0)
-        if msg:
-            print("Received one message for smoke test:")
-            print({k: v for k, v in msg.items() if k != "_raw"})
-            # Intentionally not committing in test harness
-        else:
-            print("No message received in 2s (this is fine for a smoke test)")
-            self.consumer.close()
-            sys.exit(1)
-
+        self.consumer.maybe_fast_forward(max_delay_seconds=120, reinitialize_with_poll=True)
         self._debug_assignment_and_lag("after-ff")
 
         self._running = True
@@ -136,7 +122,7 @@ class Kafka2DB:
         logger.warning("Timed out waiting for partition assignment; continuing anyway")
 
     # -------------------- Main consume loop --------------------
-    def run_forever(self, batch_size: int = 100, poll_timeout: float = 1.0):
+    def run_forever(self, batch_size: int = 100, poll_timeout: float = 1.0, keys_filter: List[str] = None):
         logger.info("STARTING RUN FOREVER LOOP.")
         self._debug_assignment_and_lag("loop-start")
         try:
@@ -148,20 +134,20 @@ class Kafka2DB:
                     continue
 
                 logger.debug("Batch received.")
-                to_insert = []
                 for msg in batch:
                     try:
-                        if msg.get("key") not in ('11', '12', '13', '14', '15'):
-                            continue
+                        if keys_filter is not None:
+                            if msg.get("key") not in keys_filter:
+                                continue
                         payload = msg.get("value")
                         # Our consumer tries JSON first; if producer sent text JSON, ensure dict
                         if isinstance(payload, str):
                             payload = json.loads(payload)
-                            to_insert.append((msg.get("key"), payload))
-
                             try:
                                 db_laddms.insert_object_detections(
-                                    json_data=to_insert,
+                                    intersection_id=msg.get('key'),
+                                    timestamp_tz=msg.get('msg_timestamp_dt'),
+                                    json_data=payload,
                                     device_id=self.device_id,
                                     use_db_cursor=self.sql_cursor,
                                 )

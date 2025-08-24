@@ -150,6 +150,8 @@ class KafkaConfluentConsumer:
             msg_ts_utc = datetime.datetime.fromtimestamp(msg_dict['timestamp'] / 1000, tz=zoneinfo.ZoneInfo("UTC"))
             msg_ts_local = msg_ts_utc.astimezone(tz=timestamp_tz)
             msg_dict['msg_timestamp_dt'] = msg_ts_local
+
+        # TODO: return partition offsets so we can keep track of where consumer is, if desired
         return msg_dict
 
     def initialize_poll(self, retries: int = 5, error_on_failure: bool = True) -> None:
@@ -168,7 +170,8 @@ class KafkaConfluentConsumer:
             if error_on_failure:
                 raise ConnectionError(f"Could not receive data during initialization poll on {retries} retries.")
 
-    def consume_batch(self, max_messages: int = 100, timeout: float = 1.0) -> List[Dict[str, Any]]:
+    def consume_batch(self, max_messages: int = 100, timeout: float = 1.0, convert_msg_timestamp_dt: bool = True,
+             timestamp_tz: zoneinfo.ZoneInfo = zoneinfo.ZoneInfo('US/Central')) -> List[Dict[str, Any]]:
         """Consume up to max_messages in a batch for higher throughput."""
         if not self._subscribed:
             raise RuntimeError("consume_batch() called before subscribe()")
@@ -185,7 +188,12 @@ class KafkaConfluentConsumer:
                 if m and m.error() and m.error().code() != KafkaError._PARTITION_EOF:
                     logger.error("Kafka message error in batch: %s", m.error())
                 continue
-            out.append(self._to_dict(m))
+            msg_dict = self._to_dict(m)
+            if convert_msg_timestamp_dt is True:
+                msg_ts_utc = datetime.datetime.fromtimestamp(msg_dict['timestamp'] / 1000, tz=zoneinfo.ZoneInfo("UTC"))
+                msg_ts_local = msg_ts_utc.astimezone(tz=timestamp_tz)
+                msg_dict['msg_timestamp_dt'] = msg_ts_local
+            out.append(msg_dict)
         return out
 
     def maybe_fast_forward(self, max_delay_seconds: Optional[int] = None, reinitialize_with_poll: bool = True) -> None:
