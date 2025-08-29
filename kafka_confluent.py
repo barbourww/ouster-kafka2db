@@ -454,14 +454,19 @@ if __name__ == "__main__":
     print("\nFast forward to recent.\n")
     consumer.maybe_fast_forward(max_delay_seconds=30)
 
+    msg = consumer.poll(timeout=2.0)
+    if msg:
+        print({k: v for k, v in msg.items() if k not in ("_raw", 'value')})
+        print({k: v for k, v in msg['value']['object_list'][0].items() if k not in ('objects',)})
+        for obj in msg['value']["object_list"][0]["objects"]:
+            print('\t', obj)
+
     partition_lag = {}
     num_messages = {}
     size_messages = {}
     try:
         while True:
-            msg = consumer.poll(timeout=2.0)
             msgs = consumer.consume_batch(max_messages=100, timeout=5.0)
-
             if msgs:
                 for msg in msgs:
                     # print(f"Intersection ID: {msg['key']} (from partition {msg['partition']})")

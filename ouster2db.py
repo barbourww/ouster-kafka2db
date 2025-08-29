@@ -4,6 +4,7 @@ import time
 import json
 import signal
 import logging
+import datetime
 import zoneinfo
 from typing import List
 
@@ -89,7 +90,7 @@ class Kafka2DB:
         self._debug_assignment_and_lag("before-ff")
 
         # Optionally fast-forward so we don't start too far behind
-        self.consumer.maybe_fast_forward(max_delay_seconds=120, reinitialize_with_poll=True)
+        self.consumer.maybe_fast_forward(max_delay_seconds=30, reinitialize_with_poll=True)
         self._debug_assignment_and_lag("after-ff")
 
         self._running = True
@@ -125,6 +126,8 @@ class Kafka2DB:
     def run_forever(self, batch_size: int = 100, poll_timeout: float = 1.0, keys_filter: List[str] = None):
         logger.info("STARTING RUN FOREVER LOOP.")
         self._debug_assignment_and_lag("loop-start")
+        num_messages = {}
+
         try:
             while self._running:
                 logger.debug("Consuming batch.")
@@ -140,19 +143,29 @@ class Kafka2DB:
                             if msg.get("key") not in keys_filter:
                                 continue
                         payload = msg.get("value")
+                        partition = msg.get("partition")
+                        num_messages[partition] = num_messages.get(partition, 0) + 1
+                        ts_utc = datetime.datetime.fromtimestamp(msg['timestamp'] / 1000,
+                                                                 tz=zoneinfo.ZoneInfo("UTC"))
+                        ts_local = ts_utc.astimezone(tz=zoneinfo.ZoneInfo('US/Central'))
+                        lag = round((datetime.datetime.now(
+                            tz=zoneinfo.ZoneInfo('US/Central')) - ts_local).total_seconds(), 3)
+                        if num_messages[partition] % 1000 == 0:
+                            logger.info(f"Partition lag for P{partition} is {lag}s. Message counts: {num_messages}.")
                         # Our consumer tries JSON first; if producer sent text JSON, ensure dict
                         if isinstance(payload, str):
                             payload = json.loads(payload)
-                            try:
-                                db_laddms.insert_object_detections(
-                                    intersection_id=msg.get('key'),
-                                    timestamp_tz=msg.get('msg_timestamp_dt'),
-                                    json_data=payload,
-                                    device_id=self.device_id,
-                                    use_db_cursor=self.sql_cursor,
-                                )
-                            except Exception as e:
-                                logger.warning("Malformed insert.", exc_info=True)
+
+                        try:
+                            db_laddms.insert_object_detections(
+                                intersection_id=msg.get('key'),
+                                timestamp_tz=msg.get('msg_timestamp_dt'),
+                                json_data=payload,
+                                device_id=self.device_id,
+                                use_db_cursor=self.sql_cursor,
+                            )
+                        except Exception as e:
+                            logger.warning("Malformed insert.", exc_info=True)
                         # Commit this message after successful DB write
                         self.consumer.commit(msg)
                     except Exception as e:

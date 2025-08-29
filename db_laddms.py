@@ -1,3 +1,5 @@
+from os import times
+
 import psycopg
 from queries_insert import *
 
@@ -253,11 +255,12 @@ def insert_object_detections(intersection_id, timestamp_tz, json_data, device_id
     :param use_db_cursor:
     :return:
     """
+
+    if 'object_list' not in json_data:
+        return
     # Parse frame info one time.
     this_frame_timestamp = time.time()
     this_frame_count = json_data["object_list"][0]["frame_count"]
-    this_intersection_id = None
-    this_timestamp_dt = None
     
     list_of_params = []
     for object_json in json_data["object_list"][0]["objects"]:
@@ -301,14 +304,12 @@ def insert_object_detections(intersection_id, timestamp_tz, json_data, device_id
             'uncertain_vx': object_json["velocity_uncertainty"]["x"],
             'uncertain_vy': object_json["velocity_uncertainty"]["y"],
             'uncertain_vz': object_json["velocity_uncertainty"]["z"],
-            'frame_timestamp_dt': None,
-            'intersection_id': None,
+            'frame_timestamp_dt': timestamp_tz,
+            'intersection_id': intersection_id,
         }
         
         list_of_params.append(query_params)
-
-    #print(str(list_of_params))
-#    print(list_of_params)
+    # print(f"Inserting {len(list_of_params)} objects into database.")
     use_db_cursor.executemany(object_detection_insert,
                               list_of_params)
     return

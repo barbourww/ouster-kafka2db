@@ -80,8 +80,8 @@ object_detection_insert = """
     	%(creation_timestamp)s, %(object_frame_count)s, %(initial_x)s, %(initial_y)s, %(initial_z)s,
     	%(primary_sensor)s, %(distance_primary_sensor)s,
     	%(num_total_points)s, %(num_primary_points)s, %(num_failed_returns)s, %(class_confidence)s,
-    	%(uncertain_x)s, %(uncertain_y)s, %(uncertain_z)s, %(uncertain_vx)s, %(uncertain_vy)s, %(uncertain_vz)s
-    	%(frame_timestamp_dt)s, %(intersection_id)
+    	%(uncertain_x)s, %(uncertain_y)s, %(uncertain_z)s, %(uncertain_vx)s, %(uncertain_vy)s, %(uncertain_vz)s,
+    	%(frame_timestamp_dt)s, %(intersection_id)s
 	    );
 """
 
