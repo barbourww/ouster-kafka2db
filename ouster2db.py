@@ -200,4 +200,4 @@ if __name__ == "__main__":
     signal.signal(signal.SIGTERM, _graceful_shutdown)
 
     worker.start()
-    worker.run_forever()
+    worker.run_forever(keys_filter=['11', '12', '13', '14', '15'])

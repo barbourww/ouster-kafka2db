@@ -8,5 +8,5 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 
-RUN mkdir -p /var/log/ouster2kafka
-CMD ["python3", "ouster2kafka.py"]
+RUN mkdir -p /var/log/ouster2db
+CMD ["python3", "ouster2db.py"]
