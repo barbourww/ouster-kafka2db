@@ -41,7 +41,8 @@ def make_sql_connection(database_name: str = 'NDOT',
         username = os.environ.get('SQL_USERNAME')
         password = os.environ.get('SQL_PASSWORD')
 #    hostname="TODO"
-    print("hostname: " + str(hostname))
+    stripped_hostname = str(hostname).strip().strip('"').strip("'")
+    print("hostname: " + stripped_hostname)
     print("port: " + str(port))
     print("username: " + str(username))
     print("password: " + str(password))
@@ -49,7 +50,7 @@ def make_sql_connection(database_name: str = 'NDOT',
     connection_error_context = None
     while retry_counter > 0:
         try:
-            conn = psycopg.connect(host=hostname, port=port, user=username, password=password,
+            conn = psycopg.connect(host=stripped_hostname, port=port, user=username, password=password,
                                    dbname=database_name, autocommit=autocommit)
             break
         except psycopg.OperationalError as e:
