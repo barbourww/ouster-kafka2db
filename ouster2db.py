@@ -127,8 +127,10 @@ class Kafka2DB:
         logger.info("STARTING RUN FOREVER LOOP.")
         self._debug_assignment_and_lag("loop-start")
         num_messages = {}
+        num_inserts = {}
 
         try:
+            start_time = time.time()
             while self._running:
                 logger.debug("Consuming batch.")
                 batch = self.consumer.consume_batch(max_messages=batch_size, timeout=poll_timeout)
@@ -150,20 +152,24 @@ class Kafka2DB:
                         ts_local = ts_utc.astimezone(tz=zoneinfo.ZoneInfo('US/Central'))
                         lag = round((datetime.datetime.now(
                             tz=zoneinfo.ZoneInfo('US/Central')) - ts_local).total_seconds(), 3)
-                        if num_messages[partition] % 1000 == 0:
+                        if num_messages[partition] % 100 == 0:
                             logger.info(f"Partition lag for P{partition} is {lag}s. Message counts: {num_messages}.")
+                            logger.info(f"Total inserts: {num_inserts}. "
+                                        f"Pace = {round(sum(num_inserts.values()) / (time.time() - start_time), 0)}/s")
                         # Our consumer tries JSON first; if producer sent text JSON, ensure dict
                         if isinstance(payload, str):
                             payload = json.loads(payload)
 
                         try:
-                            db_laddms.insert_object_detections(
+                            num_query_inserts = db_laddms.insert_object_detections(
                                 intersection_id=msg.get('key'),
                                 timestamp_tz=msg.get('msg_timestamp_dt'),
                                 json_data=payload,
                                 device_id=self.device_id,
-                                use_db_cursor=self.sql_cursor,
+                                use_db_conn=self.sql_connection,
+                                # use_db_cursor=self.sql_cursor,
                             )
+                            num_inserts[partition] = num_inserts.get(partition, 0) + num_query_inserts
                         except Exception as e:
                             logger.warning("Malformed insert.", exc_info=True)
                         # Commit this message after successful DB write
