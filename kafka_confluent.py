@@ -76,18 +76,21 @@ class KafkaConfluentConsumer:
             #   be placed in the same group and work together.
             "group.id": group_id,
             # Use new consumer protocol, which does broker-side balancing and assignment.
-            "group.protocol": "consumer",
+            # "group.protocol": "consumer",
             # Default seek to latest. Option to seek backwards in log, but default to front.
             "auto.offset.reset": auto_offset_reset,
             # No guaranteed delivery of messages right now.
             "enable.auto.commit": True,
             "enable.auto.offset.store": True,
+            # Continuous stats every 5s
+            "statistics.interval.ms": 15000,
+            "stats_cb": self.on_stats,
             # If you want faster failover at the cost of more polls, tweak session/heartbeat
             # "session.timeout.ms": 45000,
             # "heartbeat.interval.ms": 15000,
             # pull more data per request (overall / per partition)
-            "fetch.max.bytes": 100_000_000,  # ~50 MB total per fetch
-            "max.partition.fetch.bytes": 80_000_000,  # ~20 MB per partition fetch (topic/broker must allow)
+            "fetch.max.bytes": 120_000_000,  # ~50 MB total per fetch
+            "max.partition.fetch.bytes": 120_000_000,  # ~20 MB per partition fetch (topic/broker must allow)
             # keep the pipe busy, reduce latency
             "fetch.wait.max.ms": 50,
             "queued.max.messages.kbytes": 512_000,  # ~512 MB local queue budget (tune downward if RAM-limited)
@@ -108,10 +111,10 @@ class KafkaConfluentConsumer:
     def get_partitions(self, topic: str):
         md = self.consumer.list_topics(topic=topic, timeout=10.0)
         partitions = list(md.topics[topic].partitions.keys())  # [0,1,2,...]
-        logger.info(f"\tAvailable partitions for topic {topic}: {partitions}")
-        return [TopicPartition(topic, p) for p in partitions]
+        return partitions
 
-    def subscribe(self, topics: List[str], initialize_with_poll: bool = True, init_retries: int = 5,
+    def subscribe(self, topics: List[str], force_latest: bool = False,
+                  initialize_with_poll: bool = True, init_retries: int = 5,
                   manual_assignment: bool = False, partitions: List[int] = None) -> None:
         """Subscribe to one or more topics, or explicitly assign a single partition.
 
@@ -128,16 +131,37 @@ class KafkaConfluentConsumer:
             raise ValueError("subscribe() requires at least one topic")
         if len(topics) > 1 and partitions is not None:
             raise ValueError("Multiple topics passed with a single partition specified.")
-        self.consumer.subscribe(topics, on_assign=self._on_assign, on_revoke=self._on_revoke)
-        self._subscribed = True
+        self.consumer.unsubscribe()
+        logger.info("Listing available topic partitions...")
+        for topic in topics:
+            logger.info(f"TOPIC={topic} Available partitions: {self.get_partitions(topic)}")
+        if manual_assignment is not True:
+            # Subscribe causes conflict with manual assignment.
+            self.consumer.subscribe(topics, on_assign=self._on_assign, on_revoke=self._on_revoke)
+            self._subscribed = True
         logger.info("Subscribed to topics: %s", topics)
         if manual_assignment is True:
             for this_topic in topics:
-                if partitions is not None:
-                    self.consumer.assign([TopicPartition(topic, p) for p in partitions])
+                tps = []
+                if partitions is None:
+                    logger.info(f"No partitions specified. Getting them for topic {this_topic}.")
+                    partitions = self.get_partitions(topic=this_topic)
                 else:
-                    this_topic_partitions = self.get_partitions(topic=this_topic)
-                    self.consumer.assign(this_topic_partitions)
+                    logger.info("Partition assignment explicitly specified.")
+                logger.info(f"Assigning partitions for topic {this_topic}: {partitions}")
+                for part in partitions:
+                    if force_latest is True:
+                        low, high = self.consumer.get_watermark_offsets(TopicPartition(this_topic, part), timeout=10.0)
+                        logger.info(f"Forcing latest offset on partition {part} to high water mark. High={high}; low={low}.")
+                        tps.append(TopicPartition(this_topic, part, high))
+                    else:
+                        tps.append(TopicPartition(this_topic, part))
+                logger.info(f"Final assignment to execute: {tps}")
+                self.consumer.assign(tps)
+                self._subscribed = True
+                # consumer.poll(0)            # sync internal state
+                for tp in tps:
+                    self.consumer.seek(tp)  # not strictly necessary
         if initialize_with_poll is True:
             self.initialize_poll(retries=init_retries)
 
@@ -227,46 +251,25 @@ class KafkaConfluentConsumer:
             out.append(msg_dict)
         return out
 
-    def get_lag_status_from_kafka_async(self, assignment) -> Dict[str, Any]:
-        report = {"partitions": [], "total_messages_behind": 0}
-
-        for idx, tp in enumerate(assignment):
-            try:
-                low, high = self.consumer.get_watermark_offsets(tp, timeout=10.0)
-                pos_tp = self.consumer.position([tp])
-                current = pos_tp[0].offset if pos_tp and pos_tp[0] and pos_tp[0].offset is not None else low
-                msgs_behind = max(0, (high - current)) if (high is not None and current is not None) else None
-
-                report["partitions"].append({
-                    "topic": tp.topic,
-                    "partition": tp.partition,
-                    "low": low,
-                    "high": high,
-                    "position": current,
-                    "messages_behind": msgs_behind,
-                })
-                if msgs_behind is not None:
-                    report["total_messages_behind"] += msgs_behind
-            except Exception as e:
-                logger.warning("lag_status failed for %s[%d]: %s", tp.topic, tp.partition, e)
-        return report
-
-    def lag_status(self) -> Future:
-        """Return per-partition lag info.
-        - `messages_behind`: high_watermark - current_position
-        - `older_than_window`: True if current_position is before the offset at (now - window_seconds)
-        Note: This provides an approximation using Kafka timestamps and may vary with producer timestamp behavior.
-        """
-        if not self._subscribed:
-            raise RuntimeError("lag_status() called before subscribe()")
-
-        assignment = self.consumer.assignment() or []
-        now_ms = int(time.time() * 1000)
-
-        return self._executor.submit(self.get_lag_status_from_kafka_async, assignment)
-
-
     # ---- Helpers ------------------------------------------------------------------
+    @staticmethod
+    def on_stats(stats_json_str):
+        stats = json.loads(stats_json_str)
+        print(stats)
+        # Example: print topic/partition offsets & lag
+        for tname, tinfo in stats.get("topics", {}).items():
+            for pinfo in tinfo.get("partitions", {}).values():
+                if not isinstance(pinfo, dict):
+                    logger.info(f"Got partition stat info: {pinfo}")
+                    return
+                p = pinfo.get("partition")
+                hi = pinfo.get("hi_offset")  # high watermark
+                lo = pinfo.get("lo_offset")  # low watermark
+                lag = pinfo.get("consumer_lag")  # messages behind high watermark
+                # Do your reporting/logging here:
+                logger.info(f"[{tname} -> {p}]: lo={lo} hi={hi} lag={lag}")
+        logger.info(f"[Total RX]: msgs={stats.get('rxmsgs', None)}, bytes={stats.get('rxmsg_bytes', None)}")
+
     @staticmethod
     def _decode_headers(headers: Optional[List[Tuple[str, bytes]]]) -> Dict[str, Optional[str]]:
         if not headers:
@@ -341,9 +344,12 @@ if __name__ == "__main__":
     }
 
     consumer = KafkaConfluentConsumer(common_kafka_config)
-    topic = os.environ.get("KAFKA_TOPIC", "my-topic")
-    consumer.subscribe([topic])
-    print(consumer.lag_status())
+    my_topic = os.environ.get("KAFKA_TOPIC", "my-topic")
+    init_partitions = consumer.get_partitions(my_topic)
+
+    consumer.subscribe([my_topic], manual_assignment=True, force_latest=True,
+                       initialize_with_poll=True, init_retries=10,
+                       partitions=[init_partitions[0]])
 
     msg = consumer.poll(timeout=2.0)
     if msg:
@@ -372,8 +378,6 @@ if __name__ == "__main__":
                     num_messages[p] = num_messages.get(p, 0) + 1
                     size_messages[p] = round(size_messages.get(p, 0) + sz / 1024, 1)
                     total_messages += 1
-                    if total_messages % 1000 == 0:
-                        print(consumer.lag_status())
                 print(sorted(list(partition_lag.items())), sorted(list(num_messages.items())), sorted(list(size_messages.items())))
     except KeyboardInterrupt:
         print("BREAK")
