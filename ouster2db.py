@@ -107,12 +107,15 @@ class Kafka2DB:
             start_time = time.time()
             while self._running:
                 logger.debug("Consuming batch.")
-                batch = self.consumer.consume_batch(max_messages=batch_size, timeout=poll_timeout)
+                batch, t_consume_receive, t_consume_total = self.consumer.consume_batch(
+                    max_messages=batch_size, timeout=poll_timeout)
                 if not batch:
                     logger.info("Batch empty.")
                     continue
 
                 logger.debug("Batch received.")
+                t0 = time.time()
+                t_insert_total = 0
                 for msg in batch:
                     try:
                         if keys_filter is not None:
@@ -135,7 +138,7 @@ class Kafka2DB:
                             payload = json.loads(payload)
 
                         try:
-                            num_query_inserts = db_laddms.insert_object_detections(
+                            num_query_inserts, t_insert = db_laddms.insert_object_detections(
                                 intersection_id=msg.get('key'),
                                 timestamp_tz=msg.get('msg_timestamp_dt'),
                                 json_data=payload,
@@ -144,6 +147,7 @@ class Kafka2DB:
                                 use_db_cursor=self.sql_cursor,
                             )
                             num_inserts[partition] = num_inserts.get(partition, 0) + num_query_inserts
+                            t_insert_total += t_insert
                         except Exception as e:
                             logger.warning("Malformed insert.", exc_info=True)
                     except Exception as e:
@@ -158,6 +162,8 @@ class Kafka2DB:
                         logger.debug("Commit successful.")
                 except Exception as e:
                     logger.error("Failed to commit objects detections.", exc_info=True)
+                tl = time.time() - t0
+                logger.info(f"Loop took {tl:.1f}s; consume took {t_consume_total:.1f}s; insert took {t_insert_total:.1f}s")
         except KeyboardInterrupt:
             logger.info("KeyboardInterrupt received")
         finally:
@@ -167,7 +173,7 @@ class Kafka2DB:
 def process_wrapper_create_and_start(partitions: List[int], force_latest: bool):
     kdb = Kafka2DB()
     kdb.start(partitions, force_latest)
-    kdb.run_forever()
+    kdb.run_forever(batch_size=300)
 
 
 # --- helper to spawn a single worker ---

@@ -226,13 +226,15 @@ class KafkaConfluentConsumer:
                 raise ConnectionError(f"Could not receive data during initialization poll on {retries} retries.")
 
     def consume_batch(self, max_messages: int = 100, timeout: float = 1.0, convert_msg_timestamp_dt: bool = True,
-             timestamp_tz: zoneinfo.ZoneInfo = zoneinfo.ZoneInfo('US/Central')) -> List[Dict[str, Any]]:
+             timestamp_tz: zoneinfo.ZoneInfo = zoneinfo.ZoneInfo('US/Central')) -> (List[Dict[str, Any]], float, float):
         """Consume up to max_messages in a batch for higher throughput."""
+        t0 = time.time()
         if not self._subscribed:
             raise RuntimeError("consume_batch() called before subscribe()")
 
         try:
             msgs = self.consumer.consume(num_messages=max_messages, timeout=timeout)
+            t1 = time.time()
         except KafkaException as e:
             logger.error("Kafka consume exception: %s", e)
             return []
@@ -249,7 +251,8 @@ class KafkaConfluentConsumer:
                 msg_ts_local = msg_ts_utc.astimezone(tz=timestamp_tz)
                 msg_dict['msg_timestamp_dt'] = msg_ts_local
             out.append(msg_dict)
-        return out
+        t2 = time.time()
+        return out, t1 - t0, t2 - t0
 
     # ---- Helpers ------------------------------------------------------------------
     @staticmethod
