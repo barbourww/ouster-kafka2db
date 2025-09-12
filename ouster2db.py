@@ -4,6 +4,7 @@ import time
 import json
 import signal
 import logging
+from logging.handlers import TimedRotatingFileHandler
 import datetime
 import zoneinfo
 from typing import List, Dict
@@ -45,6 +46,7 @@ class Kafka2DB:
 
         # Kafka setup
         self.topic = os.environ.get("KAFKA_TOPIC", "test")
+        self.partitions = None
         logger.info(f"Assigned topic: {self.topic}")
         kafka_conf = {
             "KAFKA_BOOTSTRAP": os.environ.get("KAFKA_BOOTSTRAP"),
@@ -60,7 +62,56 @@ class Kafka2DB:
         }
         self.consumer = KafkaConfluentConsumer(kafka_conf)
 
+        # Instance-specific data logger (15-minute rotating file)
+        self.data_logger = None
         self._running = False
+
+
+    def _setup_data_logger(self):
+        """Create/refresh an instance-specific rotating file logger using self.partitions.
+        - Rotates every 15 minutes.
+        - Writes only raw message text (no extra formatting).
+        - Logger/file name are derived from the partition list so multiple processes don't collide.
+        """
+        # Stable partition label: p0, p1-2, p0-1-2, or 'all'
+        parts = [] if not self.partitions else sorted(self.partitions)
+        part_label = "all" if not parts else "-".join(str(p) for p in parts)
+
+        # Allow env overrides; fall back to previous default stem
+        base_path = os.environ.get("DATA_LOG_FILE_DIR")
+        base_file = os.environ.get("DATA_LOG_FILE")
+        # Ensure a .log suffix while preserving any directory components
+        base_root = base_file[:-4] if base_file.endswith(".log") else base_file
+        log_path = os.path.join(base_path, f"{base_root}_p{part_label}.log")
+
+        # Unique per partition set (and instance) to avoid cross-talk
+        logger_name = f"Kafka2DBData.p{part_label}.{id(self)}"
+
+        dl = logging.getLogger(logger_name)
+        dl.setLevel(logging.INFO)
+        dl.propagate = False
+
+        # Clear existing handlers if reconfigured (e.g., restart)
+        for h in list(dl.handlers):
+            try:
+                h.close()
+            except Exception:
+                pass
+            dl.removeHandler(h)
+
+        handler = TimedRotatingFileHandler(
+            log_path,
+            when="M",
+            interval=15,
+            backupCount=int(os.environ.get("DATA_LOG_BACKUPS", "960")),
+            encoding="utf-8",
+        )
+        handler.setLevel(logging.INFO)
+        handler.setFormatter(logging.Formatter("%(message)s"))
+
+        dl.addHandler(handler)
+        self.data_logger = dl
+
 
     # -------------------- Lifecycle --------------------
     def start(self, partitions: List[int], force_latest: bool):
@@ -77,6 +128,7 @@ class Kafka2DB:
                                 partitions=partitions)
 
         self._running = True
+        self.partitions = partitions
         logger.info("Kafka2DB started; consuming from %s", self.topic)
 
 
@@ -98,10 +150,15 @@ class Kafka2DB:
                 logger.info("Stopped")
 
     # -------------------- Main consume loop --------------------
-    def run_forever(self, batch_size: int = 100, poll_timeout: float = 1.0, keys_filter: List[str] = None):
+    def run_forever(self, batch_size: int = 100, poll_timeout: float = 1.0, keys_filter: List[str] = None,
+                    bypass_db_to_file: bool = False):
         logger.info("STARTING RUN FOREVER LOOP.")
         num_messages = {}
         num_inserts = {}
+
+        if bypass_db_to_file is True:
+            if self.data_logger is None:
+                self._setup_data_logger()
 
         try:
             start_time = time.time()
@@ -124,9 +181,7 @@ class Kafka2DB:
                         payload = msg.get("value")
                         partition = msg.get("partition")
                         num_messages[partition] = num_messages.get(partition, 0) + 1
-                        ts_utc = datetime.datetime.fromtimestamp(msg['timestamp'] / 1000,
-                                                                 tz=zoneinfo.ZoneInfo("UTC"))
-                        ts_local = ts_utc.astimezone(tz=zoneinfo.ZoneInfo('US/Central'))
+                        ts_local = msg['msg_timestamp_dt']
                         lag = round((datetime.datetime.now(
                             tz=zoneinfo.ZoneInfo('US/Central')) - ts_local).total_seconds(), 3)
                         if num_messages[partition] % 100 == 0:
@@ -138,14 +193,22 @@ class Kafka2DB:
                             payload = json.loads(payload)
 
                         try:
-                            num_query_inserts, t_insert = db_laddms.insert_object_detections(
-                                intersection_id=msg.get('key'),
-                                timestamp_tz=msg.get('msg_timestamp_dt'),
-                                json_data=payload,
-                                device_id=self.device_id,
-                                # use_db_conn=self.sql_connection,
-                                use_db_cursor=self.sql_cursor,
-                            )
+                            if bypass_db_to_file is True:
+                                num_query_inserts, t_insert = self.save_data_to_file(
+                                    intersection_id=msg.get('key'),
+                                    timestamp_tz=msg.get('msg_timestamp_dt'),
+                                    json_data=payload,
+                                    device_id=self.device_id,
+                                )
+                            else:
+                                num_query_inserts, t_insert = db_laddms.insert_object_detections(
+                                    intersection_id=msg.get('key'),
+                                    timestamp_tz=msg.get('msg_timestamp_dt'),
+                                    json_data=payload,
+                                    device_id=self.device_id,
+                                    # use_db_conn=self.sql_connection,
+                                    use_db_cursor=self.sql_cursor,
+                                )
                             num_inserts[partition] = num_inserts.get(partition, 0) + num_query_inserts
                             t_insert_total += t_insert
                         except Exception as e:
@@ -168,6 +231,36 @@ class Kafka2DB:
             logger.info("KeyboardInterrupt received")
         finally:
             self.stop()
+
+
+    def save_data_to_file(self, intersection_id, timestamp_tz, json_data, device_id):
+        """Persist a single JSON line with inputs + payload via the instance data logger.
+        The file rotates every 15 minutes per TimedRotatingFileHandler.
+        """
+        try:
+            t0 = time.time()
+            if 'object_list' not in json_data:
+                return 0, 0
+            else:
+                object_count = len(json_data["object_list"][0]["objects"])
+            # Normalize timestamp for JSON serialization
+            if hasattr(timestamp_tz, "isoformat"):
+                ts = timestamp_tz.isoformat()
+            else:
+                ts = str(timestamp_tz)
+
+            record = {
+                "intersection_id": intersection_id,
+                "timestamp": ts,
+                "device_id": device_id,
+                "data": json_data,
+            }
+            # Write only the message (compact JSON) — no extra formatting
+            self.data_logger.info(json.dumps(record, separators=(",", ":"), ensure_ascii=False))
+            return object_count, time.time() - t0
+        except Exception:
+            # Use module-level logger for operational errors
+            logger.warning("Failed to write data log entry", exc_info=True)
 
 
 def process_wrapper_create_and_start(partitions: List[int], force_latest: bool):
