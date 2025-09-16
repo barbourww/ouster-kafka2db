@@ -266,7 +266,7 @@ class Kafka2DB:
 def process_wrapper_create_and_start(partitions: List[int], force_latest: bool):
     kdb = Kafka2DB()
     kdb.start(partitions, force_latest)
-    kdb.run_forever(batch_size=300)
+    kdb.run_forever(batch_size=300, bypass_db_to_file=False, keys_filter=['11', '12', '13', '14', '15'])
 
 
 # --- helper to spawn a single worker ---

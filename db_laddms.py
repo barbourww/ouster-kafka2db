@@ -7,6 +7,7 @@ import os
 import time
 import warnings
 from datetime import datetime
+from zoneinfo import ZoneInfo
 import pytz
 
 def make_sql_connection(database_name: str = 'NDOT',
@@ -40,12 +41,11 @@ def make_sql_connection(database_name: str = 'NDOT',
         port = os.environ.get('SQL_PORT', 5432)
         username = os.environ.get('SQL_USERNAME')
         password = os.environ.get('SQL_PASSWORD')
-#    hostname="TODO"
     stripped_hostname = str(hostname).strip().strip('"').strip("'")
-    print("hostname: " + stripped_hostname)
-    print("port: " + str(port))
-    print("username: " + str(username))
-    print("password: " + str(password))
+    # print("hostname: " + stripped_hostname)
+    # print("port: " + str(port))
+    # print("username: " + str(username))
+    # print("password: " + str(password))
     # Attempt connection and retry if unsuccessful, up to the retry limit
     connection_error_context = None
     while retry_counter > 0:
@@ -248,7 +248,8 @@ def insert_zone_occupation(json_data, device_id: str,
 
 def insert_object_detections(intersection_id, timestamp_tz, json_data, device_id: str,
                              use_db_cursor: psycopg.Cursor = None,
-                             use_db_conn: psycopg.Connection = None) -> (int, float):
+                             use_db_conn: psycopg.Connection = None,
+                             dict_with_object_list = None) -> (int, float):
     """
     Takes an object detections frame containing one or more individual objects and inserts each of them into the
         database using a batch insert.
@@ -266,14 +267,26 @@ def insert_object_detections(intersection_id, timestamp_tz, json_data, device_id
             use_db_cursor = use_db_conn.cursor()
             close_cursor = True
 
-    if 'object_list' not in json_data:
+    if dict_with_object_list is not None and isinstance(dict_with_object_list, dict):
+        parse_dict = dict_with_object_list
+    else:
+        if 'object_list' not in json_data or len(json_data["object_list"]) == 0:
+            return 0, 0
+        parse_dict = json_data["object_list"][0]
+
+    if "timestamp" not in parse_dict or "frame_count" not in parse_dict:
         return 0, 0
+
     # Parse frame info one time.
-    this_frame_timestamp = time.time()
-    this_frame_count = json_data["object_list"][0]["frame_count"]
+    this_frame_timestamp = parse_dict["timestamp"]
+    this_frame_count = parse_dict["frame_count"]
+
+    if timestamp_tz is None:
+        ts_utc = datetime.fromtimestamp(this_frame_timestamp / 1000000, tz=ZoneInfo("UTC"))
+        timestamp_tz = ts_utc.astimezone(tz=ZoneInfo("US/Central"))
     
     list_of_params = []
-    for object_json in json_data["object_list"][0]["objects"]:
+    for object_json in parse_dict["objects"]:
         query_params = {
         	'frame_timestamp': this_frame_timestamp,
             'frame_count': this_frame_count,
