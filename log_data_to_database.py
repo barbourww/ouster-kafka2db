@@ -101,7 +101,9 @@ if __name__ == "__main__":
 
     list_of_unvalidated_filenames = []
     if args.inlist is not None:
-        list_of_unvalidated_filenames = [fn for fn in args.inlist]
+        with open(args.inlist, "r") as f:
+            list_of_unvalidated_filenames = [fn for fn in f]
+        print(f"Read list of files: {list_of_unvalidated_filenames}")
     elif args.format is not None:
         if args.start is not None and args.end is not None:
             if args.start < args.end:
