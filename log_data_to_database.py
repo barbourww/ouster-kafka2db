@@ -69,8 +69,8 @@ def result_callback(result):
     print(f"Received result from process.\n\t{result}")
 
 
-def main(filename_intersection_tuples):
-    pool = multiprocessing.Pool(processes=4)
+def main(filename_intersection_tuples, num_processes):
+    pool = multiprocessing.Pool(processes=num_processes)
     async_result = pool.starmap_async(single_log_file_to_db, filename_intersection_tuples, callback=result_callback)
     final_results = async_result.get()
     pool.close()
@@ -95,6 +95,7 @@ if __name__ == "__main__":
     parser.add_argument("-s", "--start", required=False, type=int, help="Start index (inclusive) of log file to process.")
     parser.add_argument("-e", "--end", required=False, type=int, help="End index (inclusive) of log file to process.")
     parser.add_argument("-d", "--dry", required=False, action="store_true", default=False, help="Dry run mode.")
+    parser.add_argument("-p", "--processes", required=False, type=int, default=4, help="Number of parallel processes to run.")
 
     args = parser.parse_args()
 
@@ -144,4 +145,4 @@ if __name__ == "__main__":
         list_of_validated_filenames.append((fn, folder_to_did[intersection_folder], args.dry))
 
     print(f"Executing log to DB on {len(list_of_validated_filenames)} files.")
-    main(list_of_validated_filenames)
+    main(list_of_validated_filenames, num_processes=args.processes)
