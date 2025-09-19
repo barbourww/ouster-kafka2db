@@ -119,6 +119,9 @@ if __name__ == "__main__":
             else:
                 i2, i1 = args.start, args.end
             list_of_unvalidated_filenames = [args.format.format(i) for i in range(i1, i2 + 1)]
+            if args.format.format(0) in list_of_unvalidated_filenames:
+                list_of_unvalidated_filenames.remove(args.format.format(0))
+                list_of_unvalidated_filenames.append(args.format.strip('.{}'))
             print(f"Building log files from {i1} to {i2}.")
         else:
             raise ValueError("Specified file formatter but no start/end log indexes.")
