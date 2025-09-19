@@ -7,6 +7,7 @@ import sys
 import traceback
 from datetime import datetime
 from zoneinfo import ZoneInfo
+from filelock import FileLock
 
 import db_laddms
 
@@ -62,11 +63,22 @@ def single_log_file_to_db(log_input_filename: str, intersection_id: int, dry_run
                 sql_cursor.close()
             except:
                 pass
+    # Log this success to the tracking file if we're not in dry run mode.
+    if dry_run is False:
+        safe_write(intersection_id, log_input_filename)
     return f"fn={log_input_filename}, num_frames={frame_count}, num_detections={detection_count}"
 
 
 def result_callback(result):
     print(f"Received result from process.\n\t{result}")
+
+
+def safe_write(intersection_id, filename):
+    # Block until getting the lock
+    lock = FileLock("log2db_processed.txt.lock")
+    with lock:  # acquire the OS-level lock
+        with open("log2db_processed.txt", "a") as f:
+            f.write(f"{intersection_id},{filename}\n")
 
 
 def main(filename_intersection_tuples, num_processes):
@@ -78,10 +90,6 @@ def main(filename_intersection_tuples, num_processes):
     print("\n\n", "=" * 40)
     print(f"\nPROCESS POOL COMPLETE\n")
     print("=" * 40, "\n\n")
-    with open("log2db_processed.txt", "a") as f:
-        for fn, int_id, dry_run_mode in filename_intersection_tuples:
-            if dry_run_mode is False:
-                f.write(f"{int_id},{fn}\n")
 
 
 
