@@ -176,3 +176,4 @@ cython_debug/
 .pypirc
 *.crt
 .DS_Store
+log2db_processed.txt.lock
