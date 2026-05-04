@@ -333,8 +333,12 @@ def insert_object_detections(intersection_id, timestamp_tz, json_data, device_id
         
         list_of_params.append(query_params)
     # print(f"Inserting {len(list_of_params)} objects into database.")
-    use_db_cursor.executemany(object_detection_insert,
-                              list_of_params)
+    if intersection_id in (11, 12, 13, 14, 15):
+        use_db_cursor.executemany(broadway_object_detection_insert,
+                                  list_of_params)
+    else:
+        use_db_cursor.executemany(non_broadway_object_detection_insert,
+                                  list_of_params)
     if close_cursor:
         use_db_cursor.close()
     return len(list_of_params), time.time() - ti

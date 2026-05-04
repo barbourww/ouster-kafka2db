@@ -58,8 +58,35 @@ zone_occupation_insert = """
 """
 # Input for object_index should be created by enumeration of the objects in the zone detection
 
-object_detection_insert = """
+broadway_object_detection_insert = """
     INSERT INTO laddms.broadway_object_detections(
+    	frame_timestamp, frame_count, device_id,
+    	object_id, object_uuid, update_timestamp, classification, sub_classification,
+    	length, width, height, position_x, position_y, position_z,
+    	velocity_x, velocity_y, velocity_z,
+    	heading, orient_qw, orient_qx, orient_qy, orient_qz,
+    	creation_timestamp, object_frame_count, initial_x, initial_y, initial_z,
+    	primary_sensor, distance_primary_sensor,
+    	num_total_points, num_primary_points, num_failed_returns, class_confidence,
+    	uncertain_x, uncertain_y, uncertain_z, uncertain_vx, uncertain_vy, uncertain_vz,
+    	frame_timestamp_dt, intersection_id
+	    )
+	VALUES (
+    	%(frame_timestamp)s, %(frame_count)s, %(device_id)s,
+    	%(object_id)s, %(object_uuid)s, %(update_timestamp)s, %(classification)s, %(sub_classification)s,
+    	%(length)s, %(width)s, %(height)s, %(position_x)s, %(position_y)s, %(position_z)s,
+    	%(velocity_x)s, %(velocity_y)s, %(velocity_z)s,
+    	%(heading)s, %(orient_qw)s, %(orient_qx)s, %(orient_qy)s, %(orient_qz)s,
+    	%(creation_timestamp)s, %(object_frame_count)s, %(initial_x)s, %(initial_y)s, %(initial_z)s,
+    	%(primary_sensor)s, %(distance_primary_sensor)s,
+    	%(num_total_points)s, %(num_primary_points)s, %(num_failed_returns)s, %(class_confidence)s,
+    	%(uncertain_x)s, %(uncertain_y)s, %(uncertain_z)s, %(uncertain_vx)s, %(uncertain_vy)s, %(uncertain_vz)s,
+    	%(frame_timestamp_dt)s, %(intersection_id)s
+	    );
+"""
+
+non_broadway_object_detection_insert = """
+    INSERT INTO laddms.object_detections(
     	frame_timestamp, frame_count, device_id,
     	object_id, object_uuid, update_timestamp, classification, sub_classification,
     	length, width, height, position_x, position_y, position_z,
