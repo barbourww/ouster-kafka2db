@@ -292,7 +292,7 @@ def run_partitions_multiprocess(force_latest: bool) -> None:
     """
     # Connect to the topic initially so that we can get
     temp_kdb = Kafka2DB()
-    partitions = set(temp_kdb.consumer.get_partitions(temp_kdb.topic))
+    partitions = set(temp_kdb.consumer.get_all_partitions(temp_kdb.topic))
     temp_kdb.stop()
     del temp_kdb
 

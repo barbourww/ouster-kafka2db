@@ -105,13 +105,45 @@ class KafkaConfluentConsumer:
             raise
 
         self._subscribed = False
-        self._executor = ThreadPoolExecutor(max_workers=2)
+        self._closed = False
+        # self._executor = ThreadPoolExecutor(max_workers=2)
 
     # ---- Subscription / lifecycle -------------------------------------------------
-    def get_partitions(self, topic: str):
+    def get_all_partitions(self, topic: str):
         md = self.consumer.list_topics(topic=topic, timeout=10.0)
         partitions = list(md.topics[topic].partitions.keys())  # [0,1,2,...]
         return partitions
+
+    def discover_partition_for_key(self, topic: str, target_key: str, timeout_s=10):
+        logger.info("Discovering partition for key: %s", target_key)
+        logger.info("This may take a while...")
+
+        deadline = time.time() + timeout_s
+        self.subscribe(topics=[topic], force_latest=True, initialize_with_poll=True, init_retries=5, manual_assignment=True)
+
+        while time.time() < deadline:
+            msg = self.consumer.poll(1)
+            if msg is None:
+                continue
+            if msg.error():
+                continue
+
+            key = None
+            try:
+                if msg.key() is not None:
+                    key = msg.key().decode("utf-8")
+            except Exception:
+                key = msg.key()  # leave as bytes if not decodable
+            if key == target_key:
+                p = msg.partition()
+                logger.info(f"Partition found: {p}")
+                self.consumer.unsubscribe()
+                self.close()
+                return p
+        else:
+            self.consumer.unsubscribe()
+            self.close()
+            return None
 
     def subscribe(self, topics: List[str], force_latest: bool = False,
                   initialize_with_poll: bool = True, init_retries: int = 5,
@@ -127,6 +159,8 @@ class KafkaConfluentConsumer:
             partitions: If provided, explicitly assign to this partition of the single provided topic
                        (bypasses group management / rebalance callbacks).
         """
+        if self._closed:
+            raise RuntimeError("Consumer is already closed. Create a new one.")
         if not topics:
             raise ValueError("subscribe() requires at least one topic")
         if len(topics) > 1 and partitions is not None:
@@ -134,7 +168,7 @@ class KafkaConfluentConsumer:
         self.consumer.unsubscribe()
         logger.info("Listing available topic partitions...")
         for topic in topics:
-            logger.info(f"TOPIC={topic} Available partitions: {self.get_partitions(topic)}")
+            logger.info(f"TOPIC={topic} Available partitions: {self.get_all_partitions(topic)}")
         if manual_assignment is not True:
             # Subscribe causes conflict with manual assignment.
             self.consumer.subscribe(topics, on_assign=self._on_assign, on_revoke=self._on_revoke)
@@ -145,7 +179,7 @@ class KafkaConfluentConsumer:
                 tps = []
                 if partitions is None:
                     logger.info(f"No partitions specified. Getting them for topic {this_topic}.")
-                    partitions = self.get_partitions(topic=this_topic)
+                    partitions = self.get_all_partitions(topic=this_topic)
                 else:
                     logger.info("Partition assignment explicitly specified.")
                 logger.info(f"Assigning partitions for topic {this_topic}: {partitions}")
@@ -168,7 +202,8 @@ class KafkaConfluentConsumer:
     def close(self) -> None:
         try:
             self.consumer.close()
-            self._executor.shutdown(wait=True)
+            # self._executor.shutdown(wait=True)
+            self._closed = True
         except Exception:
             logger.exception("Error closing consumer", exc_info=True)
 
@@ -348,7 +383,7 @@ if __name__ == "__main__":
 
     consumer = KafkaConfluentConsumer(common_kafka_config)
     my_topic = os.environ.get("KAFKA_TOPIC", "my-topic")
-    init_partitions = consumer.get_partitions(my_topic)
+    init_partitions = consumer.get_all_partitions(my_topic)
 
     consumer.subscribe([my_topic], manual_assignment=True, force_latest=True,
                        initialize_with_poll=True, init_retries=10,
