@@ -245,7 +245,7 @@ class KafkaConfluentConsumer:
 
     def initialize_poll(self, retries: int = 5, error_on_failure: bool = True) -> None:
         for i in range(retries):
-            test_msg = self.poll(timeout=5.0, convert_msg_timestamp_dt=True)
+            test_msg = self.poll(timeout=15.0, convert_msg_timestamp_dt=True)
             if test_msg:
                 logger.info("Received initial message for initialization:")
                 print(f"\tMessage key: {test_msg['key']}")
