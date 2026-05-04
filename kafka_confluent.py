@@ -61,7 +61,7 @@ class KafkaConfluentConsumer:
         group_id = config.get("KAFKA_GROUP_ID", "ouster2pg_consumer")
         auto_offset_reset = config.get("KAFKA_AUTO_OFFSET_RESET", "latest")
         # enable_auto_commit = bool(config.get("KAFKA_ENABLE_AUTO_COMMIT", True))
-        ca_location = config.get("KAFKA_CA_LOCATION", "strimzi-ca.crt")
+        ca_location = config.get("KAFKA_CA_LOCATION", "/etc/viewlive/certs/strimzi-ca.crt")
         self._max_start_delay_seconds = int(config.get("KAFKA_MAX_START_DELAY_SECONDS", 60))
 
         self.conf = {

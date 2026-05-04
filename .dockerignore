@@ -1,0 +1,9 @@
+.git
+.gitignore
+*.crt
+*.key
+*.p12
+*.pem
+.env
+*.log
+__pycache__

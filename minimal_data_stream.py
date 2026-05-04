@@ -53,7 +53,7 @@ class OusterKafkaFeed:
             "KAFKA_ENABLE_AUTO_COMMIT": False,
             # Cap initial backlog to ~60s by default (can override via env)
             "KAFKA_MAX_START_DELAY_SECONDS": max_start_delay_seconds,
-            "KAFKA_CA_LOCATION": os.environ.get("KAFKA_CA_LOCATION", "strimzi-ca.crt"),
+            "KAFKA_CA_LOCATION": os.environ.get("KAFKA_CA_LOCATION", "/etc/viewlive/certs/strimzi-ca.crt"),
         }
         self.consumer = KafkaConfluentConsumer(kafka_conf)
 
